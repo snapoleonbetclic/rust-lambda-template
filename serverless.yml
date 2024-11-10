@@ -1,0 +1,78 @@
+service: rustTemplate
+
+frameworkVersion: '3'
+
+plugins:
+  - serverless-better-credentials # Supports AWS Single Sign On natively. https://forum. # serverless.com/t/use-aws-sso-on-sls/11521
+  - serverless-prune-plugin # Keep only X versions
+  - serverless-iam-roles-per-function # Create IAM role for each function
+
+custom:
+  namePrefix: '${sls:stage}-${self:service}'
+  appVersion: '${env:PACKAGE_VERSION, "latest"}'
+  owner: 'your_team_email'
+  prune: # MANDATORY keep only three version
+    automatic: true
+    number: 3
+
+package:
+  individually: true
+
+provider:
+  name: aws
+  runtime: provided.al2023
+  region: eu-west-1
+  stackName: ${self:custom.namePrefix}-stack
+  deploymentBucket: # MANDATORY: Please respect the bucket name
+    name: ${self:custom.namePrefix}-serverless-deployment-bucket
+  logRetentionInDays: 14 # MANDATORY RetentionInDays for a CloudWatch LogGroup
+  stackTags: # Cloudformation stack tags. Spread across all resources
+    version: ${self:custom.appVersion}
+  iam:
+    role:
+      name: ${self:custom.namePrefix}-role
+  architecture: arm64 # 'x86_64' or 'arm64'
+
+functions:
+  hello:
+    name: ${self:custom.namePrefix}-lambda
+    description: My functions description
+    handler: rust-lambda-template
+    module: src
+    memorySize: 128
+    timeout: 1
+    reservedConcurrency: 1 # Change it to match your needs. Must be discussed in canvas
+    onError: !GetAtt HelloLambdaDLQ.Arn
+    iamRoleStatementsName: "${self:functions.hello.name}-role"
+    iamRoleStatements:
+      - Sid: AllowSQSDLQ
+        Effect: "Allow"
+        Action:
+          - sqs:SendMessage
+        Resource: !GetAtt HelloLambdaDLQ.Arn
+    tags:
+      bg:application-name: ${self:functions.hello.name}
+    package:
+      artifact:
+        - target/lambda/rust-lambda-template/bootstrap.zip
+
+resources:
+  Description: 'This is your stack description' #MANDATORY stack description
+  Resources:
+    HelloLogGroup: # Log group resource name has to be set as : <FuntionRessourceName>+LogGroup
+      Type: AWS::Logs::LogGroup
+      Properties:
+        Tags:
+          - Key: application-name
+            Value: "/aws/lambda/${self:functions.hello.name}"
+
+    HelloLambdaDLQ:
+      Type: AWS::SQS::Queue
+      Properties:
+        QueueName: ${self:functions.hello.name}-dl
+        SqsManagedSseEnabled: true
+        MaximumMessageSize: 262144 # 262144 = 256KiB
+        MessageRetentionPeriod: 1209600 # 1209600 = 14 days
+        Tags:
+          - Key: application-name
+            Value: ${self:functions.hello.name}-dl

@@ -1,0 +1,125 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: Deploy a lambda that is a template for rust
+
+Parameters:
+  PrefixName:
+    Description: Prefix Name
+    Type: "String"
+    Default: lz
+    AllowedPattern: "^[a-z]{1,10}$"
+
+  LogLevel:
+    Description: Log level of the function
+    Type: String
+    Default: INFO
+    AllowedValues:
+      - DEBUG
+      - INFO
+      - WARNING
+      - ERROR
+      - CRITICAL
+
+Mappings:
+  ConstantsMap:
+    Constants:
+      LambdaNameSuffix: infra-rustTemplate-lambda
+      LambdaRoleNameSuffix: infra-rustTemplate-role
+
+Globals:
+  Function:
+    Timeout: 10
+    Runtime: provided.al2023
+    Architectures:
+      - arm64
+    AutoPublishAlias: live
+
+Resources:
+  RustTemplateLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub
+        - "/aws/lambda/${PrefixName}-${LambdaNameSuffix}"
+        - LambdaNameSuffix: !FindInMap [ ConstantsMap, Constants, LambdaNameSuffix ]
+      RetentionInDays: 14
+      Tags:
+        - Key: "application-name"
+          Value: !Sub
+            - "/aws/lambda/${PrefixName}-${LambdaNameSuffix}"
+            - LambdaNameSuffix: !FindInMap [ ConstantsMap, Constants, LambdaNameSuffix ]
+
+  RustTemplateFunctionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub
+        - "${PrefixName}-${LambdaRoleNameSuffix}"
+        - LambdaRoleNameSuffix: !FindInMap [ ConstantsMap, Constants, LambdaRoleNameSuffix ]
+      Description: !Sub
+        - "Role for Lambda function ${PrefixName}-${LambdaNameSuffix}"
+        - LambdaNameSuffix: !FindInMap [ ConstantsMap, Constants, LambdaNameSuffix ]
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Path: "/"
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: DeadLetterQueuePolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: "sqs:SendMessage"
+                Resource: !GetAtt RustTemplateLamdbaDLQueue.Arn
+      Tags:
+        - Key: "application-name"
+          Value: !Sub
+            - "${PrefixName}-${LambdaRoleNameSuffix}"
+            - LambdaRoleNameSuffix: !FindInMap [ ConstantsMap, Constants, LambdaRoleNameSuffix ]
+
+  RustTemplateFunction:
+    Type: AWS::Serverless::Function
+    Metadata:
+      BuildMethod: rust-cargolambda
+    Properties:
+      CodeUri: .
+      Handler: bootstrap
+      FunctionName: !Sub
+        - "${PrefixName}-${LambdaNameSuffix}"
+        - LambdaNameSuffix: !FindInMap [ ConstantsMap, Constants, LambdaNameSuffix ]
+      Description: Lambda used to remediate the datadog AWS integration across all AWS accounts
+      ReservedConcurrentExecutions: 1
+      MemorySize: 128
+      DeadLetterQueue:
+        Type: SQS
+        TargetArn: !GetAtt RustTemplateLamdbaDLQueue.Arn
+      Environment:
+        Variables:
+          LOG_LEVEL: !Ref LogLevel
+          POWERTOOLS_SERVICE_NAME: !Sub "${AccountName}.rustTemplate"
+      Role: !GetAtt RustTemplateFunctionRole.Arn
+      Tags:
+        application-name: !Sub
+          - "${PrefixName}-${LambdaNameSuffix}"
+          - LambdaNameSuffix: !FindInMap [ ConstantsMap, Constants, LambdaNameSuffix ]
+
+  RustTemplateLamdbaDLQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub
+        - "${PrefixName}-${LambdaNameSuffix}-dl"
+        - LambdaNameSuffix: !FindInMap [ ConstantsMap, Constants, LambdaNameSuffix ]
+      SqsManagedSseEnabled: true
+      MessageRetentionPeriod: 1209600 # 1209600 = 14 days
+      MaximumMessageSize: 262144 # 262144 = 256KiB
+      Tags:
+        - Key: "application-name"
+          Value: !Sub
+            - "${PrefixName}-${LambdaNameSuffix}-dl"
+            - LambdaNameSuffix: !FindInMap [ ConstantsMap, Constants, LambdaNameSuffix ]
